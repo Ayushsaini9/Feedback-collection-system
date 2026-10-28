@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { apiLogin, apiRegister, apiSubmitPublicResponse } from './api';
 import './styles.css';
 
 const STORAGE_KEY = 'feedbackhub-local-state-v1';
@@ -129,7 +130,7 @@ function AuthPage({ onLogin }) {
       setError('Please complete the required fields.');
       return;
     }
-    onLogin({ ...form, firstName: form.firstName || 'Alex', lastName: form.lastName || 'Morgan' });
+    onLogin({ ...form, register, firstName: form.firstName || 'Alex', lastName: form.lastName || 'Morgan' });
   };
   return <div className="auth-page">
     <div className="auth-glow auth-glow-one" /><div className="auth-glow auth-glow-two" />
@@ -248,7 +249,17 @@ function PublicFeedback({ state, updateState, form }) {
   const [answers, setAnswers] = useState({});
   const [submitted, setSubmitted] = useState(false);
   const setAnswer = (id, value) => setAnswers((current) => ({ ...current, [id]: value }));
-  const submit = (event) => { event.preventDefault(); const requiredMissing = form.questions.some((question) => question.required && !answers[question.id]); if (requiredMissing) return; const response = { id: uid('resp'), respondent: 'Anonymous', submittedAt: new Date().toISOString(), answers: form.questions.map((question) => answers[question.id] || '') }; const forms = state.forms.map((item) => item.id === form.id ? { ...item, responseCount: item.responseCount + 1 } : item); updateState({ ...state, forms, responses: { ...state.responses, [form.id]: [response, ...(state.responses[form.id] || [])] } }); setSubmitted(true); };
+  const submit = async (event) => {
+    event.preventDefault();
+    const requiredMissing = form.questions.some((question) => question.required && !answers[question.id]);
+    if (requiredMissing) return;
+    const response = { id: uid('resp'), respondent: 'Anonymous', submittedAt: new Date().toISOString(), answers: form.questions.map((question) => answers[question.id] || '') };
+    const forms = state.forms.map((item) => item.id === form.id ? { ...item, responseCount: item.responseCount + 1 } : item);
+    const apiAnswers = form.questions.map((question) => ({ questionId: question.id, value: answers[question.id] || '' }));
+    apiSubmitPublicResponse(form.publicId, apiAnswers).catch(() => {});
+    updateState({ ...state, forms, responses: { ...state.responses, [form.id]: [response, ...(state.responses[form.id] || [])] } });
+    setSubmitted(true);
+  };
   if (submitted) return <div className="public-page"><div className="public-success glass"><div className="success-icon">✓</div><h1>Thank you for your feedback!</h1><p>Your response has been recorded and will help us improve the product.</p><Button onClick={() => { setSubmitted(false); setAnswers({}); }}>Submit another response</Button></div></div>;
   return <div className="public-page"><div className="public-wrap"><section className="glass public-header"><div className="public-company"><div className="public-company-avatar">A</div><div><span>{state.organization.name}</span><h1>{form.title}</h1></div></div><p>{form.description}</p></section><form className="public-form" onSubmit={submit}>{form.questions.map((question, index) => <div className="glass question-card" key={question.id}><label>{index + 1}. {question.title} {question.required && <em>*</em>}</label>{question.description && <p>{question.description}</p>}{question.type === 'RATING' && <div className="star-row">{[1, 2, 3, 4, 5].map((value) => <button type="button" className={Number(answers[question.id]) >= value ? 'selected' : ''} key={value} onClick={() => setAnswer(question.id, value)}>★</button>)}</div>}{question.type === 'SINGLE_CHOICE' && <div className="choice-list">{question.options.map((option) => <label className={answers[question.id] === option ? 'choice selected' : 'choice'} key={option}><input type="radio" name={question.id} checked={answers[question.id] === option} onChange={() => setAnswer(question.id, option)} />{option}</label>)}</div>}{question.type === 'SCALE' && <div className="scale-row">{Array.from({ length: 10 }, (_, item) => item + 1).map((value) => <button type="button" className={Number(answers[question.id]) === value ? 'selected' : ''} key={value} onClick={() => setAnswer(question.id, value)}>{value}</button>)}</div>}{question.type === 'YES_NO' && <div className="yes-no"><button type="button" className={answers[question.id] === 'Yes' ? 'selected' : ''} onClick={() => setAnswer(question.id, 'Yes')}>Yes</button><button type="button" className={answers[question.id] === 'No' ? 'selected' : ''} onClick={() => setAnswer(question.id, 'No')}>No</button></div>}{question.type === 'LONG_TEXT' && <textarea rows="4" value={answers[question.id] || ''} onChange={(event) => setAnswer(question.id, event.target.value)} placeholder="Type your response here..." />}{question.type === 'SHORT_TEXT' && <input value={answers[question.id] || ''} onChange={(event) => setAnswer(question.id, event.target.value)} placeholder="Type your response here..." />}</div>)}<Button type="submit" className="full-width submit-feedback">Submit Feedback Response</Button></form></div></div>;
 }
@@ -258,7 +269,17 @@ function App() {
   const [state, setState] = useState(loadState);
   useEffect(() => saveState(state), [state]);
   const updateState = (next) => setState(next);
-  const login = (details) => { setState((current) => ({ ...current, authenticated: true, user: { ...current.user, firstName: details.firstName, lastName: details.lastName, email: details.email }, organization: { ...current.organization, name: details.organizationName || current.organization.name } })); navigate('/dashboard'); };
+  const login = async (details) => {
+    try {
+      const remote = details.register ? await apiRegister(details) : await apiLogin(details.email, details.password);
+      localStorage.setItem('accessToken', remote.accessToken);
+      localStorage.setItem('refreshToken', remote.refreshToken);
+      setState((current) => ({ ...current, authenticated: true, user: { ...current.user, ...remote.user }, organization: { ...current.organization, name: remote.organizations?.[0]?.name || details.organizationName || current.organization.name } }));
+    } catch {
+      setState((current) => ({ ...current, authenticated: true, user: { ...current.user, firstName: details.firstName, lastName: details.lastName, email: details.email }, organization: { ...current.organization, name: details.organizationName || current.organization.name } }));
+    }
+    navigate('/dashboard');
+  };
   const logout = () => { setState((current) => ({ ...current, authenticated: false })); navigate('/auth/login'); };
   if (path.startsWith('/feedback/')) {
     const publicId = path.split('/')[2];
